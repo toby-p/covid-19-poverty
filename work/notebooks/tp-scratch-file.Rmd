@@ -1,0 +1,124 @@
+---
+title: "MIDS W203 Lab 2 - TP scratch"
+author: "Toby Petty"
+date: "4/4/2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("data.table")
+library("ggplot2")
+library("reshape2")
+library("dplyr")
+library("lmtest")
+library("patchwork")
+```
+```{r import data, echo=FALSE, message=FALSE, warning=FALSE}
+
+# NYT covid data
+data_cleaned <- fread("../data/processed/data_cleaned.csv")
+data_cleaned$percent_age_75_plus = data_cleaned$pop_age_75_plus / data_cleaned$total_population
+data_cleaned$percent_age_65_plus = data_cleaned$pop_age_65_plus / data_cleaned$total_population
+data_cleaned$percent_higher_edu = data_cleaned$edu_higher_edu / data_cleaned$total_population
+summary(data_cleaned)
+```
+```{r hist deathsperlakh, echo = FALSE, warning=FALSE, message=FALSE, fig.height = 3, fig.width = 4}
+hst_dpl <- ggplot(data=data_cleaned, aes(deathsperlakh)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  ggtitle("Dependent Variable - deathsperlakh") + 
+  labs(x="deathsperlakh", y="Count")
+hst_dpl
+```
+```{r poverty metrics, echo = FALSE, warning=FALSE, message=FALSE, fig.height = 3, fig.width = 7}
+hst_poverty_65_plus <- ggplot(data=data_cleaned, aes(poverty_65_plus)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  labs(x="poverty_65_plus", y="Count")
+hst_percent_in_poverty <- ggplot(data=data_cleaned, aes(percent_in_poverty)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  labs(x="percent_in_poverty", y="Count")
+hst_population_in_poverty <- ggplot(data=data_cleaned, aes(population_in_poverty)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  labs(x="population_in_poverty", y="Count")
+sctr_percent_in_poverty = ggplot(data_cleaned, aes(x=percent_in_poverty, y=deathsperlakh)) +
+  geom_point(alpha=0.5, color="blue") +  
+  labs(x="percent_in_poverty", y="deathsperlakh")
+
+(hst_percent_in_poverty) | (sctr_percent_in_poverty)
+```
+```{r density, echo = FALSE, warning=FALSE, message=FALSE, fig.height = 3, fig.width = 12}
+hst_pop_den <- ggplot(data=data_cleaned, aes(pop_den)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  labs(x="pop_den", y="Count")
+
+data_cleaned$pop_den_log10 = log10(data_cleaned$pop_den)
+hst_pop_den_log10 <- ggplot(data=data_cleaned, aes(pop_den_log10)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  labs(x="pop_den_log10", y="Count")
+
+sctr_pop_den = ggplot(data_cleaned, aes(x=pop_den, y=deathsperlakh)) +
+  geom_point(alpha=0.5, color="blue") +  
+  ggtitle("pop_den - raw") + 
+  labs(x="pop_den", y="deathsperlakh")
+
+sctr_pop_denlog10 = ggplot(data_cleaned, aes(x=pop_den, y=deathsperlakh)) +
+  geom_point(alpha=0.5, color="blue") +  
+  ggtitle("pop_den - log10") + 
+  labs(x="pop_den (log10)", y="deathsperlakh") + 
+  scale_x_continuous(trans = "log10")
+
+(hst_pop_den) | (hst_pop_den_log10) | (sctr_pop_den) | (sctr_pop_denlog10)
+```
+
+```{r age metrics, echo = FALSE, warning=FALSE, message=FALSE, fig.height = 3, fig.width = 12}
+hst_percent_age_75_plus <- ggplot(data=data_cleaned, aes(percent_age_75_plus)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  labs(x="percent_age_75_plus", y="Count")
+hst_percent_age_65_plus <- ggplot(data=data_cleaned, aes(percent_age_65_plus)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  labs(x="percent_age_65_plus", y="Count")
+sctr_percent_age_75_plus = ggplot(data_cleaned, aes(x=percent_age_75_plus, y=deathsperlakh)) +
+  geom_point(alpha=0.5, color="blue") +  
+  labs(x="percent_age_75_plus", y="deathsperlakh")
+ sctr_percent_age_65_plus = ggplot(data_cleaned, aes(x=percent_age_65_plus, y=deathsperlakh)) +
+  geom_point(alpha=0.5, color="blue") +  
+  labs(x="percent_age_65_plus", y="deathsperlakh")
+
+(hst_percent_age_75_plus) | (hst_percent_age_65_plus) | (sctr_percent_age_75_plus) | (sctr_percent_age_65_plus)
+```
+```{r other metric hists, echo = FALSE, warning=FALSE, message=FALSE, fig.height = 3, fig.width = 12}
+hst_wo_computer_pct <- ggplot(data=data_cleaned, aes(wo_computer_pct)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  labs(x="wo_computer_pct", y="Count")
+hst_wo_internet_pct <- ggplot(data=data_cleaned, aes(wo_internet_pct)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  labs(x="wo_internet_pct", y="Count")
+hst_percent_higher_edu <- ggplot(data=data_cleaned, aes(percent_higher_edu)) + 
+  geom_histogram(bins=15, color="blue", fill="blue", alpha=0.5) +
+  labs(x="percent_higher_edu", y="Count")
+
+sctr_percent_age_75_plus = ggplot(data_cleaned, aes(x=percent_age_75_plus, y=deathsperlakh)) +
+  geom_point(alpha=0.5, color="blue") +  
+  labs(x="percent_age_75_plus", y="deathsperlakh")
+ sctr_percent_age_65_plus = ggplot(data_cleaned, aes(x=percent_age_65_plus, y=deathsperlakh)) +
+  geom_point(alpha=0.5, color="blue") +  
+  labs(x="percent_age_65_plus", y="deathsperlakh")
+
+(hst_wo_computer_pct) | (hst_wo_internet_pct) | (hst_percent_higher_edu) 
+```
+
+```{r other metric scatters, echo = FALSE, warning=FALSE, message=FALSE, fig.height = 3, fig.width = 12}
+sctr_wo_computer_pct = ggplot(data_cleaned, aes(x=wo_computer_pct, y=deathsperlakh)) +
+  geom_point(alpha=0.5, color="blue") +  
+  labs(x="wo_computer_pct", y="deathsperlakh")
+sctr_wo_internet_pct = ggplot(data_cleaned, aes(x=wo_internet_pct, y=deathsperlakh)) +
+  geom_point(alpha=0.5, color="blue") +  
+  labs(x="wo_internet_pct", y="deathsperlakh")
+sctr_percent_higher_edu = ggplot(data_cleaned, aes(x=percent_higher_edu, y=deathsperlakh)) +
+  geom_point(alpha=0.5, color="blue") +  
+  labs(x="percent_higher_edu", y="deathsperlakh")
+
+(sctr_wo_computer_pct) | (sctr_wo_internet_pct) | (sctr_percent_higher_edu) 
+```

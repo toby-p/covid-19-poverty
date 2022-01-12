@@ -1,0 +1,729 @@
+---
+title: "COVIDEDA (some W203 lab 2 data explorations)"
+author: "Tilman Bayer, Kieran Berton, Ruilan Liu, Toby Petty"
+output:
+  html_document:
+    df_print: paged
+---
+Reusing parts of [Kevin Martin's "COVID Data Chomper (CDC)"](https://ucbischool.slack.com/archives/C01HVT8V2BV/p1616362670110600) ("This tool will grab data from the New York Times Covid case tracker dataset on github and help you chomp it up into a form that is more useful to you. Feel free to modify and supplement this file as desired.")
+1
+## Import libraries
+
+```{r setup, include=FALSE}
+## Import libraries
+library("stargazer")
+library("data.table")
+library("ggplot2")
+library("dplyr")
+library("lmtest")
+library("psych")
+library("patchwork")
+library("leaps")
+library("ggpubr") # run 'install.packages("ggpubr")' once manually if necessary
+```
+
+## Ingest data from NYT COVID Database 
+
+(Downloaded on March 27, 2021 via `$ curl -O https://raw.githubusercontent.com/nytimes/covid-19-data/eab41bf87e3fed34ff31f30b2a1cc1ec73377eff/us-states.csv`. Dataset documentation: https://github.com/nytimes/covid-19-data )
+```{r get_nyt_data}
+NYT_Data <- fread("../data/raw/nytimes/us-states.csv")
+
+#convert dates to date
+NYT_Data[,date:=as.Date(date)]
+
+NYT_Data_increments <- NYT_Data %>% 
+  group_by(state) %>% 
+    mutate(daily_cases = cases-lag(cases, default = cases[1]))
+
+NYT_Data_increments <- NYT_Data_increments %>% 
+  group_by(state) %>% 
+    mutate(daily_deaths = deaths-lag(deaths, default = deaths[1]))
+
+#take total deaths from final date in dataset
+static_date <- max(NYT_Data_increments$date)
+cat(as.character(static_date), "is the last date in the dataset")
+
+#exclude non-state territories and non-final dates
+NYT_covid <- NYT_Data_increments %>%
+  filter(date == static_date,
+    state != "Virgin Islands",
+    state != "Guam",
+    state != "Northern Mariana Islands",
+    state != "District of Columbia",
+    state != "Puerto Rico"
+  ) %>% 
+  subset(select = -c(daily_cases,daily_deaths))
+```
+
+
+## Ingest 2019 American Community Survey data 
+
+(Downloaded on March 27, 2021 from https://data.census.gov/cedsci/table?q=ACS&g=0100000US.04000.001&tid=ACSDP1Y2019.DP05&moe=false&hidePreview=true )
+```{r get_acs_data}
+
+# ACS population data
+ACS_pop <- fread("../data/raw/ACS/ACSDP1Y2019.DP05_data_with_overlays_2021-03-25T141408.csv",skip=1)
+
+demographic <- select(ACS_pop, 
+                      "Geographic Area Name", 
+                      "Estimate!!SEX AND AGE!!Total population", 
+                      "Estimate!!SEX AND AGE!!Total population!!65 to 74 years",
+                      "Estimate!!SEX AND AGE!!Total population!!75 to 84 years",
+                      "Estimate!!SEX AND AGE!!Total population!!85 years and over") %>%
+               rename(
+                 state = "Geographic Area Name",
+                 total_population = "Estimate!!SEX AND AGE!!Total population",
+                 pop_age_65 = "Estimate!!SEX AND AGE!!Total population!!65 to 74 years",
+                 pop_age_75 = "Estimate!!SEX AND AGE!!Total population!!75 to 84 years",
+                 pop_age_85 = "Estimate!!SEX AND AGE!!Total population!!85 years and over") %>%
+               mutate(
+                 pop_age_75_plus = pop_age_75 + pop_age_85,
+                 pop_age_65_plus = pop_age_65 + pop_age_75 + pop_age_85)
+
+
+
+# ACS poverty data
+ACS_poverty <- fread("../data/raw/ACS/ACSST1Y2019.S1701_2021-03-29T143251/ACSST1Y2019.S1701_data_with_overlays_2021-03-25T140047.csv",skip=1)
+
+poverty <- select(ACS_poverty, 
+                  "Geographic Area Name",
+                  "Estimate!!Below poverty level!!Population for whom poverty status is determined!!AGE!!65 years and over",
+                  "Estimate!!Below poverty level!!Population for whom poverty status is determined!!EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Some college, associate's degree",
+                  "Estimate!!Below poverty level!!Population for whom poverty status is determined!!EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Bachelor's degree or higher",
+                  "Estimate!!Percent below poverty level!!Population for whom poverty status is determined",
+                  "Estimate!!Total!!Population for whom poverty status is determined") %>%
+  rename(
+    state = "Geographic Area Name",
+    poverty_65_plus = "Estimate!!Below poverty level!!Population for whom poverty status is determined!!AGE!!65 years and over",
+    poverty_some_college = "Estimate!!Below poverty level!!Population for whom poverty status is determined!!EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Some college, associate's degree",
+    poverty_bachelor = "Estimate!!Below poverty level!!Population for whom poverty status is determined!!EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Bachelor's degree or higher",
+    population_in_poverty = "Estimate!!Total!!Population for whom poverty status is determined",
+    percent_in_poverty = "Estimate!!Percent below poverty level!!Population for whom poverty status is determined") %>%
+  mutate(
+    poverty_higher_edu = poverty_some_college + poverty_bachelor)
+
+
+
+# ACS education data
+ACS_edu <- fread("../data/raw/ACS/ACSST1Y2019.S1501_2021-03-30T021803/ACSST1Y2019.S1501_data_with_overlays_2021-03-28T203228.csv",skip=1)
+
+education <- select(ACS_edu,
+                    "Geographic Area Name",
+                    "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 18 to 24 years!!Some college or associate's degree",
+                    "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 18 to 24 years!!Bachelor's degree or higher",
+                    "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Some college, no degree",
+                    "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Associate's degree",
+                    "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Bachelor's degree or higher",
+                    "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 65 years and over!!Bachelor's degree or higher",
+                    "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 18 to 24 years!!High school graduate (includes equivalency)",
+                    "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!High school graduate (includes equivalency)") %>%
+  rename(
+    state = 'Geographic Area Name',
+    edu_assoc_under_24 = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 18 to 24 years!!Some college or associate's degree",
+    edu_bachelor_under_24 = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 18 to 24 years!!Bachelor's degree or higher",
+    edu_nodegree_over_25 = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Some college, no degree",
+    edu_assoc_over_25 = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Associate's degree",
+    edu_bachelor_over_25 = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Bachelor's degree or higher",
+    edu_bachelor_over_65 = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 65 years and over!!Bachelor's degree or higher",
+    edu_hs_under_24 = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 18 to 24 years!!High school graduate (includes equivalency)",
+    edu_hs_over_25 = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!High school graduate (includes equivalency)") %>%
+  mutate(
+    edu_higher_edu_18_plus = edu_assoc_under_24 + edu_bachelor_under_24 + edu_nodegree_over_25 + edu_assoc_over_25 + edu_bachelor_over_25,
+    edu_higher_edu_25_plus = edu_nodegree_over_25 + edu_assoc_over_25 + edu_bachelor_over_25,
+    edu_hs_18_plus = edu_hs_under_24 + edu_hs_over_25,
+    edu_hs_or_higher_18_plus = edu_hs_under_24 + edu_hs_over_25 + edu_higher_edu_18_plus,
+    edu_hs_or_higher_25_plus = edu_hs_over_25 + edu_higher_edu_25_plus)
+
+
+
+# ACS housing data
+ACS_housing <- fread("../data/raw/ACS/ACSDP1Y2019.DP04_2021-03-30T022519/ACSDP1Y2019.DP04_data_with_overlays_2021-03-29T141407.csv",skip=1)
+
+housing <- select(ACS_housing,
+                  "Geographic Area Name",
+                  "Estimate!!HOUSING OCCUPANCY!!Total housing units",
+                  "Estimate!!OCCUPANTS PER ROOM!!Occupied housing units!!1.00 or less",
+                  "Estimate!!OCCUPANTS PER ROOM!!Occupied housing units!!1.01 to 1.50",
+                  "Estimate!!OCCUPANTS PER ROOM!!Occupied housing units!!1.51 or more") %>%
+            rename(
+              state = "Geographic Area Name",
+              total_housing_units = "Estimate!!HOUSING OCCUPANCY!!Total housing units",
+              less_than_1person_room = "Estimate!!OCCUPANTS PER ROOM!!Occupied housing units!!1.00 or less",
+              more_than_1person_room = "Estimate!!OCCUPANTS PER ROOM!!Occupied housing units!!1.01 to 1.50",
+              more_than_1.5person_room = "Estimate!!OCCUPANTS PER ROOM!!Occupied housing units!!1.51 or more") %>%
+            mutate(
+              one_plus_person_room = more_than_1person_room + more_than_1.5person_room )
+
+
+
+# ACS internet data
+ACS_internet <- fread("../data/raw/ACS/ACSST1Y2019.S2801_2021-04-08T171225/ACSST1Y2019.S2801_data_with_overlays_2021-04-08T171101.csv",skip=1)
+
+internet <- select(ACS_internet,
+                   "Geographic Area Name",
+                   "Estimate!!Total!!Total households",
+                   "Estimate!!Total!!Total households!!TYPES OF COMPUTER!!Has one or more types of computing devices:",
+                   "Estimate!!Total!!Total households!!TYPES OF COMPUTER!!No computer",
+                   "Estimate!!Total!!Total households!!TYPE OF INTERNET SUBSCRIPTIONS!!With an Internet subscription:",
+                   "Estimate!!Total!!Total households!!TYPE OF INTERNET SUBSCRIPTIONS!!Without an Internet subscription") %>%
+            rename(
+              state = "Geographic Area Name",
+              total_households = "Estimate!!Total!!Total households",
+              with_computer = "Estimate!!Total!!Total households!!TYPES OF COMPUTER!!Has one or more types of computing devices:",
+              wo_computer = "Estimate!!Total!!Total households!!TYPES OF COMPUTER!!No computer",
+              with_internet = "Estimate!!Total!!Total households!!TYPE OF INTERNET SUBSCRIPTIONS!!With an Internet subscription:",
+              wo_internet = "Estimate!!Total!!Total households!!TYPE OF INTERNET SUBSCRIPTIONS!!Without an Internet subscription") %>%
+            mutate(
+              wo_computer_pct = wo_computer/total_households,
+              wo_internet_pct = wo_internet/total_households)
+```
+
+## Land Area Data
+```{r import land area data}
+# US Area data
+CB_area <- fread("../data/raw/LandArea/State Area Measurements and Internal Point Coordinates.csv")
+
+landarea <- select(CB_area,State,LandArea_Sq.Mi.) %>%
+  rename(state = State,
+         landarea = LandArea_Sq.Mi.)
+```
+
+```{r}
+pop_and_poverty = merge(poverty,demographic)
+write.csv(pop_and_poverty,"../data/processed/pop_and_poverty.csv", row.names = FALSE)
+
+```
+
+## Augment NYT data with ACS statistics and Land Area Data
+```{r augment_with_acs}
+#combine data on covid cases/deaths each day with data on state populations
+data_cleaned <- merge(NYT_covid, demographic)
+data_cleaned <- merge(data_cleaned,poverty)
+data_cleaned <- merge(data_cleaned,education)
+data_cleaned <- merge(data_cleaned,housing)
+data_cleaned <- merge(data_cleaned,internet)
+data_cleaned <- merge(data_cleaned,landarea)
+data_cleaned <- data_cleaned %>%
+    mutate(
+      casesperlakh = 100000 * cases / total_population,
+      deathsperlakh = 100000 * deaths / total_population,
+      pop_den = total_population / landarea,
+      log_pop_den = log10(pop_den),
+      house_per_capita = total_housing_units / total_population,
+      hs_edu_18_plus_percent = edu_hs_18_plus / total_population,
+      hs_edu_25_plus_percent = edu_hs_over_25 / total_population,
+      hs_or_higher_18_plus_percent = edu_hs_or_higher_18_plus / total_population,
+      hs_or_higher_25_plus_percent = edu_hs_or_higher_25_plus / total_population,
+      higher_edu_18_plus_per_capita = edu_higher_edu_18_plus/total_population,
+      higher_edu_25_plus_per_capita = edu_higher_edu_25_plus/total_population,
+      pct_age_65_plus = pop_age_65_plus/total_population,
+      pct_age_75_plus = pop_age_75_plus/total_population,
+      pct_age_85_plus = pop_age_85/total_population,
+      )
+
+write.csv(data_cleaned,"../data/processed/data_cleaned.csv", row.names = FALSE)
+```
+
+
+# Histograms of variables in the data_cleaned table
+```{r message = FALSE, error=FALSE,echo=FALSE}
+sapply(data_cleaned, is.numeric)
+
+# plot series of histograms, excluding variables not normalized by state size
+for_hist <- subset(data_cleaned,select = 
+                     -c(state,date,fips,cases,deaths,
+                        pop_age_65, pop_age_75, pop_age_85,
+                        pop_age_65_plus, pop_age_75_plus, 
+                        poverty_65_plus, poverty_some_college, poverty_bachelor,
+                        poverty_higher_edu, edu_assoc_under_24,
+                        edu_bachelor_under_24, edu_nodegree_over_25,
+                        edu_assoc_over_25, edu_bachelor_over_25,
+                        edu_bachelor_over_65, edu_higher_edu_18_plus,
+                        edu_higher_edu_25_plus,
+                        edu_hs_under_24,
+                        edu_hs_over_25,
+                        edu_hs_18_plus,
+                        edu_hs_or_higher_18_plus,
+                        edu_hs_or_higher_25_plus,
+                        total_housing_units,
+                        less_than_1person_room, more_than_1person_room,
+                        more_than_1.5person_room, one_plus_person_room,
+                        total_households, 
+                        with_computer, wo_computer, with_internet, wo_internet,
+                        landarea
+                        ))
+
+par(mfrow = c(2, 2))
+lapply(seq(for_hist), function(x)
+  hist(x=for_hist[[x]],xlab=names(for_hist)[x], main=paste("hist", names(for_hist)[x])))
+
+```
+
+
+# scatterplots to decide transformation
+```{r}
+
+par(mfrow = c(2, 2))
+
+loop.vector <- 1:ncol(for_hist)
+
+for (i in loop.vector) {
+  
+  x <- for_hist[,i]
+  y <- for_hist$deathsperlakh
+  plot(x,y,main = paste("deathsperlakh vs.",names(for_hist)[i]),xlab=names(for_hist)[i],ylab="deathsperlakh")
+
+}
+
+```
+
+
+
+# Model evaluation 
+
+## Define a model 
+
+### Try subset selection with both pop_den and log_pop_den included
+```{r subset selection including both pop_den and log_pop_den}
+data_cleaned_model_selection_with_lpd <- data_cleaned %>% select(
+  percent_in_poverty,
+  wo_internet_pct,
+  deathsperlakh,
+  pop_den,
+  log_pop_den,
+  house_per_capita,
+  hs_or_higher_25_plus_percent,
+  higher_edu_18_plus_per_capita,
+  pct_age_85_plus
+)
+
+# Adapted from http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/155-best-subsets-regression-essentials-in-r/#computing-best-subsets-regression 
+# (but without their use of BIC and CP):
+models <- regsubsets(deathsperlakh~., data = data_cleaned_model_selection_with_lpd,force.in = "percent_in_poverty")
+summary(models)
+
+res.sum <- summary(models)
+Adj.R2 <- which.max(res.sum$adjr2)
+print(res.sum$adjr2)
+cat('Optimal number of predictors to minimize adjusted R^2:', Adj.R2)
+max_num_predictors <- length(res.sum$adjr2)
+
+get_names <- coef(models, 1:sum(lengths(res.sum$adjr2)))
+
+```
+
+
+### Try subset selection with only log_pop_den included
+
+```{r subset selection including only log_pop_den}
+data_cleaned_model_selection_with_only_lpd <- data_cleaned %>% select(
+  percent_in_poverty,
+  wo_internet_pct,
+  deathsperlakh,
+  # pop_den,
+  log_pop_den,
+  house_per_capita,
+  hs_or_higher_25_plus_percent,
+  higher_edu_18_plus_per_capita,
+  pct_age_85_plus
+)
+
+# Adapted from http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/155-best-subsets-regression-essentials-in-r/#computing-best-subsets-regression 
+# (but without their use of BIC and CP):
+models <- regsubsets(deathsperlakh~., data = data_cleaned_model_selection_with_only_lpd,force.in = "percent_in_poverty")
+summary(models)
+
+res.sum <- summary(models)
+Adj.R2 <- which.max(res.sum$adjr2)
+print(res.sum$adjr2)
+cat('Optimal number of predictors to minimize adjusted R^2:', Adj.R2)
+max_num_predictors <- length(res.sum$adjr2)
+
+get_names <- coef(models, 1:sum(lengths(res.sum$adjr2)))
+
+```
+
+
+### (Final choice:) Subset selection with only pop_den included
+
+```{r subset selection without log_pop_den (final version)}
+data_cleaned_model_selection <- data_cleaned %>% select(
+  percent_in_poverty,
+  wo_internet_pct,
+  deathsperlakh,
+  pop_den,
+  house_per_capita,
+  hs_or_higher_25_plus_percent,
+  higher_edu_18_plus_per_capita,
+  pct_age_85_plus
+)
+
+# Adapted from http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/155-best-subsets-regression-essentials-in-r/#computing-best-subsets-regression 
+# (but without their use of BIC and CP):
+models <- regsubsets(deathsperlakh~., data = data_cleaned_model_selection,force.in = "percent_in_poverty")
+summary(models)
+
+res.sum <- summary(models)
+Adj.R2 <- which.max(res.sum$adjr2)
+print(res.sum$adjr2)
+cat('Optimal number of predictors to minimize adjusted R^2:', Adj.R2)
+max_num_predictors <- length(res.sum$adjr2)
+
+get_names <- coef(models, 1:sum(lengths(res.sum$adjr2)))
+
+```
+
+
+```{r}
+
+# loop.vector <- sum(lengths(res.sum$adjr2))
+#
+# par_list <- list()
+#
+# for(i in 1:loop.vector){
+#   name <- paste('model',i,sep='')
+#   tmp <- list(names(get_names[[i]]))
+#   tmp <- tmp[[1]][-1]
+#  par_list[[name]] <- tmp}
+#
+#
+# par_list
+
+# adapted from http://www.sthda.com/english/articles/37-model-selection-essentials-in-r/155-best-subsets-regression-essentials-in-r/#k-fold-cross-validation :
+get_model_formula <- function(id, object, outcome){
+  # get models data
+  models <- summary(object)$which[id,-1]
+  # Get outcome variable
+  #form <- as.formula(object$call[[2]])
+  #outcome <- all.vars(form)[1]
+  # Get model predictors
+  predictors <- names(which(models == TRUE))
+  predictors <- paste(predictors, collapse = "+")
+  # Build model formula
+  as.formula(paste0(outcome, "~", predictors))
+}
+
+outcomevariable <- "deathsperlakh"
+
+model1 <- lm(as.formula(get_model_formula(1, models, outcomevariable)), data = data_cleaned_model_selection) 
+
+model2 <- lm(as.formula(get_model_formula(2, models, outcomevariable)), data = data_cleaned_model_selection) 
+
+model3 <- lm(as.formula(get_model_formula(3, models, outcomevariable)), data = data_cleaned_model_selection) 
+
+model4 <- lm(as.formula(get_model_formula(4, models, outcomevariable)), data = data_cleaned_model_selection) 
+
+model5 <- lm(as.formula(get_model_formula(5, models, outcomevariable)), data = data_cleaned_model_selection) 
+
+model6 <- lm(as.formula(get_model_formula(6, models, outcomevariable)), data = data_cleaned_model_selection) 
+
+if (max_num_predictors >= 7) {
+model7 <- lm(as.formula(get_model_formula(7, models, outcomevariable)), data = data_cleaned_model_selection) 
+}
+
+if (max_num_predictors >= 8) {
+  model8 <- lm(as.formula(get_model_formula(8, models, outcomevariable)), data = data_cleaned_model_selection) 
+}
+
+ourmodel <- lm(deathsperlakh~percent_in_poverty+
+               pop_den+
+               house_per_capita+
+               hs_or_higher_25_plus_percent+
+               pct_age_85_plus,
+             data=data_cleaned_model_selection)
+summary(ourmodel)
+
+```
+
+```{r}
+ourmodel_minimal <- lm(deathsperlakh ~ percent_in_poverty, data = data_cleaned)
+#stargazer(ourmodel_minimal, ourmodel, ourmodel2, ourmodel3, title="Model Comparison", align=TRUE,type='text')
+```
+
+
+### Check distributions and correlations
+```{r}
+
+pairs.panels(model.frame(model1))
+pairs.panels(model.frame(model2))
+pairs.panels(model.frame(model3))
+pairs.panels(model.frame(model4))
+pairs.panels(model.frame(model5))
+pairs.panels(model.frame(model6))
+if (max_num_predictors >= 7) {
+pairs.panels(model.frame(model7))
+}
+if (max_num_predictors >= 8) {
+pairs.panels(model.frame(model8))
+}
+pairs.panels(model.frame(ourmodel))
+
+```
+
+
+
+## Check CLM Assumptions
+
+
+### IID?
+
+_(no EDA needed, to be covered entirely in prose in the report)_
+
+
+### Linear conditional expectation?
+
+Eyeball the plot of residuals vs. the predicted death rate values: 
+
+```{r}
+data_cleaned %>%
+  mutate(
+    predicted_values = predict(ourmodel),
+    residuals = resid(ourmodel)
+    ) %>%
+    ggplot(aes(predicted_values, residuals) ) +
+    geom_point() +
+    geom_text(aes(label = state), size=3) +
+    stat_smooth() +
+    labs(x="Predicted value", y="Residual", 
+         title = "Residuals vs. predicted values (Model 2)")
+```
+```{r}
+# equivalent plot:
+plot(ourmodel, which = 1)
+```
+
+```{r}
+
+p1 <- data_cleaned %>%
+  mutate(
+    predicted_values = predict(model1),
+    residuals = resid(model1)
+    ) %>%
+    ggplot(aes(predicted_values, residuals) ) +
+    geom_point() +
+    stat_smooth() +
+    labs(x="Predicted Value", y="Residual", title = "model1")
+
+
+p2 <- data_cleaned %>%
+  mutate(
+    predicted_values = predict(model2),
+    residuals = resid(model2)
+    ) %>%
+    ggplot(aes(predicted_values, residuals) ) +
+    geom_point() +
+    stat_smooth() +
+    labs(x="Predicted Value", y="Residual", title = "model2")
+
+
+p3 <- data_cleaned %>%
+  mutate(
+    predicted_values = predict(model3),
+    residuals = resid(model3)
+    ) %>%
+    ggplot(aes(predicted_values, residuals) ) +
+    geom_point() +
+    stat_smooth() +
+    labs(x="Predicted Value", y="Residual", title = "model3")
+
+
+p4 <- data_cleaned %>%
+  mutate(
+    predicted_values = predict(model4),
+    residuals = resid(model4)
+    ) %>%
+    ggplot(aes(predicted_values, residuals) ) +
+    geom_point() +
+    stat_smooth() +
+    labs(x="Predicted Value", y="Residual", title = "model4")
+
+
+p5 <- data_cleaned %>%
+  mutate(
+    predicted_values = predict(model5),
+    residuals = resid(model5)
+    ) %>%
+    ggplot(aes(predicted_values, residuals) ) +
+    geom_point() +
+    stat_smooth() +
+    labs(x="Predicted Value", y="Residual", title = "model5")
+
+
+p6 <- data_cleaned %>%
+  mutate(
+    predicted_values = predict(model6),
+    residuals = resid(model6)
+    ) %>%
+    ggplot(aes(predicted_values, residuals) ) +
+    geom_point() +
+    stat_smooth() +
+    labs(x="Predicted Value", y="Residual", title = "model6")
+
+if (max_num_predictors >= 7) {
+p7 <- data_cleaned %>%
+  mutate(
+    predicted_values = predict(model7),
+    residuals = resid(model7)
+    ) %>%
+    ggplot(aes(predicted_values, residuals) ) +
+    geom_point() +
+    stat_smooth() +
+    labs(x="Predicted Value", y="Residual", title = "model7")
+}
+
+if (max_num_predictors >= 8) {
+p8 <- data_cleaned %>%
+  mutate(
+    predicted_values = predict(model8),
+    residuals = resid(model8)
+    ) %>%
+    ggplot(aes(predicted_values, residuals) ) +
+    geom_point() +
+    stat_smooth() +
+    labs(x="Predicted Value", y="Residual", title = "model8")
+}
+
+if (max_num_predictors >= 7) {
+  if (max_num_predictors >= 8) {
+ggarrange(p1,p2,p3,p4,p5,p6,p7,p8, rremove("x.text"), 
+          ncol = 2, nrow = 2)
+  } else {
+  ggarrange(p1,p2,p3,p4,p5,p6,p7, rremove("x.text"), 
+          ncol = 2, nrow = 2)
+}} else {
+ggarrange(p1,p2,p3,p4,p5,p6, rremove("x.text"), 
+          ncol = 2, nrow = 2)
+}
+```
+
+### No perfect collinearity?
+
+This assumption is satisfied if `lm()` did not drop coefficients:
+
+```{r}
+ourmodel$coefficients
+```
+We can also check correlations between variables:
+
+```{r check correlations}
+cor(select(data_cleaned, percent_in_poverty, house_per_capita))
+```
+
+### Homoskedastic errors?
+1. check if the Breusch-Pagan test already rejects the null hypothesis that we 
+have homoskedasticity:
+```{r}
+bptest(ourmodel)
+```
+
+```{r}
+bptest(model1)
+bptest(model2)
+bptest(model3)
+bptest(model4)
+bptest(model5)
+bptest(model6)
+if (max_num_predictors >= 7) {
+bptest(model7)
+}
+if (max_num_predictors >= 8) {
+bptest(model8)
+}
+```
+
+
+2. Again eyeball the first plot of residuals vs. predictions in the 
+"Linear conditional expectation" section above, this time to check how much the 
+height of the grey band varies
+
+and/or
+
+3. eyeball the scale-location plot, where the smoothed curve should look flat:
+
+```{r}
+plot(ourmodel, which = 3)
+```
+
+### Normally distributed errors?
+
+1. check if the Shapiro-Wilk test already rejects the null hypothesis that the 
+residuals are normally distributed:
+```{r}
+shapiro.test(resid(ourmodel))
+```
+and/or
+
+2. eyeball the QQ-plot:
+```{r}
+plot(ourmodel, which=2)
+```
+
+
+```{r}
+
+par(mfrow = c(2, 2))
+
+plot(model1, which=2)
+plot(model2, which=2)
+plot(model3, which=2)
+plot(model4, which=2)
+plot(model5, which=2)
+plot(model6, which=2)
+if (max_num_predictors >= 7) {
+plot(model7, which=2)
+}
+if (max_num_predictors >= 8) {
+plot(model8, which=2)
+}
+
+```
+
+
+# Other Graphs
+
+```{r simple scatterplot,echo=FALSE,message=FALSE, fig.height=5, fig.width=9}
+ggplot(data_cleaned, aes(x=pop_den, y=house_per_capita))+ 
+  geom_point()+
+  geom_text(aes(label = state),size=3)+
+  labs(x = 'Population density (units: TKTK)',
+    y = 'Inhabitants per housing units', 
+    title = 'Housing unit size vs population density',
+    subtitle = 'Data from ...',
+    fontsize = 10)+
+  theme(
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        plot.title = element_text(size=22))
+# ggsave("TKTKT.png")
+```
+
+## Calculate cases on a time interval (from Kevin)
+(Kevin:)
+```{r calc_time_frame}
+start.date <- as.Date("2021-01-01")
+end.date <- as.Date("2021-02-28")
+interval.cases <- NYT_Data[date == end.date, cases] - NYT_Data[date == start.date, cases]
+```
+
+## Total death ratio vs. % of aged population
+```{r deaths_vs_aged_pc}
+ggplot(data_cleaned, aes(x=pop_age_75_plus, y=deathsperlakh)) + 
+  geom_point() + 
+  geom_text(aes(label = state)) 
+```
+
+```{r simple deaths poverty scatterplot,echo=FALSE,message=FALSE, fig.height=5, fig.width=9}
+ggplot(data_cleaned, aes(x=percent_in_poverty, y=deathsperlakh))+ 
+  geom_point()+
+  geom_text(aes(label = state),size=3)+
+  labs(x = 'Percentage of Total Population in Poverty (2019)',
+    y = 'Deaths per 100,000 People as of March 26, 2021', 
+    title = 'Poverty and Covid Deaths',
+    subtitle = 'Data from the 2019 American Community Survey and The New York Times Covid 19 Database',
+    fontsize = 10)+
+  theme(
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        plot.title = element_text(size=22))
+#ggsave("Poverty_and_Covid_Deaths.png")
+```
